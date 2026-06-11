@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+venv/
+env/
+.venv/
+.env
+uploads/original/*
+uploads/processed/*
+!uploads/original/.gitkeep
+!uploads/processed/.gitkeep
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.pytest_cache/
+*.log

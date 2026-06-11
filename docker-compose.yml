@@ -1,0 +1,54 @@
+services:
+  backend:
+    build: .
+    container_name: sparetrack_backend
+    restart: always
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - .:/app
+      - ./uploads:/app/uploads
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  postgres:
+    image: postgres:16
+    container_name: sparetrack_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: sparetrack_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - sparetrack_postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: sparetrack_redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+  celery_worker:
+    build: .
+    container_name: sparetrack_celery_worker
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      - backend
+      - postgres
+      - redis
+    volumes:
+      - .:/app
+      - ./uploads:/app/uploads
+    command: celery -A app.celery_app.celery worker --loglevel=info --concurrency=1
+
+volumes:
+  sparetrack_postgres_data:
