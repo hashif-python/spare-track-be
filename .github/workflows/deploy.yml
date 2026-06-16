@@ -47,6 +47,11 @@ jobs:
             docker compose up --build -d
 
             echo "Running database migrations..."
+            if [ -z "$(ls -A alembic/versions 2>/dev/null)" ]; then
+              echo "No Alembic migration files found. Creating initial migration..."
+              docker compose exec -T backend alembic revision --autogenerate -m "initial tables"
+            fi
+
             docker compose exec -T backend alembic upgrade head
 
             echo "Restarting backend and celery worker..."
