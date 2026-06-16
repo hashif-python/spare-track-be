@@ -1,0 +1,47 @@
+name: Deploy SpareTrack Backend
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/sparetrack_key
+          chmod 600 ~/.ssh/sparetrack_key
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy on VPS
+        run: |
+          ssh -i ~/.ssh/sparetrack_key ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} << 'EOF'
+            set -e
+
+            cd ${{ secrets.VPS_PROJECT_PATH }}
+
+            echo "Pulling latest code..."
+            git pull origin main
+
+            echo "Building and restarting Docker containers..."
+            docker compose up --build -d
+
+            echo "Running database migrations..."
+            docker compose exec -T backend alembic upgrade head
+
+            echo "Restarting backend and worker..."
+            docker compose restart backend celery_worker
+
+            echo "Cleaning unused Docker images..."
+            docker image prune -f
+
+            echo "Deployment completed successfully."
+          EOF

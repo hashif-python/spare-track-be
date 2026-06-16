@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     ANTHROPIC_API_KEY: str | None = None
     ANTHROPIC_MODEL: str = "claude-haiku-4-5-20251001"
-    ANTHROPIC_MAX_TOKENS: int = 2500
+    ANTHROPIC_MAX_TOKENS: int = 4000
 
     TAVILY_API_KEY: str | None = None
     TAVILY_SEARCH_DEPTH: str = "basic"
@@ -39,9 +39,11 @@ class Settings(BaseSettings):
     SERPAPI_API_KEY: str | None = None
     USE_SERPAPI_FALLBACK: bool = False
 
-    LOOKUP_TIMEOUT_SECONDS: int = 30
-    LOOKUP_MIN_CONFIDENCE: float = 0.65
-    LOOKUP_BATCH_SIZE: int = 10
+    LOOKUP_TIMEOUT_SECONDS: int = 45
+    LOOKUP_MIN_CONFIDENCE: float = 0.50
+    LOOKUP_BATCH_SIZE: int = 3
+
+    LOOKUP_MAX_SEARCH_QUERIES_PER_PART: int = 1
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -5,50 +5,74 @@ from app.lookup.schemas import WebSearchResult
 
 
 class WebSearchClient:
+    def __init__(self) -> None:
+        self._cache: dict[str, list[WebSearchResult]] = {}
+
     def search_part(
         self,
         brand_name: str,
         part_number: str,
         product_name: str | None = None,
     ) -> list[WebSearchResult]:
-        query_parts = [
-            brand_name,
-            part_number,
-            product_name or "",
-            "laptop spare part price description",
-        ]
+        part_number = str(part_number).strip().upper()
 
-        query = " ".join([part for part in query_parts if part]).strip()
+        cache_key = self._make_cache_key(
+            brand_name=brand_name,
+            part_number=part_number,
+            product_name=product_name,
+        )
 
-        results = self._search_tavily(query=query)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
 
-        if not results and settings.USE_SERPAPI_FALLBACK:
-            results = self._search_serpapi(query=query)
+        queries = self._build_queries(
+            brand_name=brand_name,
+            part_number=part_number,
+            product_name=product_name,
+        )
 
-        return results
+        all_results: list[WebSearchResult] = []
+        seen_urls = set()
+
+        max_queries = max(
+            1,
+            getattr(settings, "LOOKUP_MAX_SEARCH_QUERIES_PER_PART", 1),
+        )
+
+        for query in queries[:max_queries]:
+            results = self._search_tavily(query=query)
+
+            if settings.USE_SERPAPI_FALLBACK and not results:
+                results.extend(self._search_serpapi(query=query))
+
+            for result in results:
+                url = result.url or ""
+
+                if url and url in seen_urls:
+                    continue
+
+                seen_urls.add(url)
+                all_results.append(result)
+
+        final_results = all_results[: settings.TAVILY_MAX_RESULTS]
+        self._cache[cache_key] = final_results
+
+        return final_results
 
     def search_parts_batch(
         self,
         brand_name: str,
         part_numbers: list[str],
     ) -> dict[str, list[WebSearchResult]]:
-        """
-        Search web evidence for many part numbers.
-
-        Important:
-        - This may still call search API once per part number.
-        - But it reduces expensive LLM calls by sending all evidence in one Claude request.
-        """
-
         evidence: dict[str, list[WebSearchResult]] = {}
 
-        for part_number in part_numbers:
-            results = self.search_part(
+        unique_part_numbers = self._unique_values(part_numbers)
+
+        for part_number in unique_part_numbers:
+            evidence[part_number] = self.search_part(
                 brand_name=brand_name,
                 part_number=part_number,
             )
-
-            evidence[part_number] = results
 
         return evidence
 
@@ -59,22 +83,95 @@ class WebSearchClient:
     ) -> dict[str, list[WebSearchResult]]:
         evidence: dict[str, list[WebSearchResult]] = {}
 
+        cleaned_parts = []
+        seen = set()
+
         for item in parts:
             part_number = str(item.get("part_number") or "").strip().upper()
-            product_name = item.get("product_name")
 
-            if not part_number:
+            if not part_number or part_number in seen:
                 continue
 
-            results = self.search_part(
-                brand_name=brand_name,
-                part_number=part_number,
-                product_name=product_name,
+            seen.add(part_number)
+
+            cleaned_parts.append(
+                {
+                    "part_number": part_number,
+                    "product_name": item.get("product_name"),
+                }
             )
 
-            evidence[part_number] = results
+        for item in cleaned_parts:
+            part_number = item["part_number"]
+
+            evidence[part_number] = self.search_part(
+                brand_name=brand_name,
+                part_number=part_number,
+                product_name=item.get("product_name"),
+            )
 
         return evidence
+
+    def _build_queries(
+        self,
+        brand_name: str,
+        part_number: str,
+        product_name: str | None = None,
+    ) -> list[str]:
+        """
+        Keep query generic.
+
+        Good:
+        Dell NYR84 description and price
+        Dell 247PN description and price
+        HP L14384-001 description and price
+
+        Avoid forcing product type:
+        laptop, server, PowerEdge, Mini SAS, keyboard, screen, etc.
+        """
+
+        brand_name = str(brand_name).strip()
+        part_number = str(part_number).strip().upper()
+
+        alternatives = self._alternate_part_numbers(part_number)
+        alt_text = " OR ".join(alternatives)
+
+        queries = []
+
+        if product_name:
+            queries.append(
+                f"{brand_name} {part_number} {product_name} description and price"
+            )
+
+        queries.append(f"{brand_name} {part_number} description and price")
+
+        if len(alternatives) > 1:
+            queries.append(f"{brand_name} ({alt_text}) description and price")
+
+        queries.append(f"{brand_name} {part_number} part number description price")
+        queries.append(f"{brand_name} {part_number} spare part")
+
+        return list(dict.fromkeys(queries))
+
+    def _alternate_part_numbers(self, part_number: str) -> list[str]:
+        """
+        Dell often uses both:
+        Y100N and 0Y100N
+        M299P and 0M299P
+        86TPR and 086TPR
+        """
+
+        part_number = str(part_number).strip().upper()
+
+        alternatives = [part_number]
+
+        if not part_number.startswith("0"):
+            alternatives.append(f"0{part_number}")
+
+        if part_number.startswith("0") and len(part_number) > 1:
+            alternatives.append(part_number[1:])
+
+        return list(dict.fromkeys(alternatives))
 
     def _search_tavily(self, query: str) -> list[WebSearchResult]:
         if not settings.TAVILY_API_KEY:
@@ -158,7 +255,7 @@ class WebSearchClient:
         blocks: list[str] = []
 
         for part_number, results in evidence.items():
-            lines = [f"PART NUMBER: {part_number}"]
+            lines = [f"REQUESTED PART NUMBER: {part_number}"]
 
             if not results:
                 lines.append("No search results found for this part.")
@@ -170,7 +267,7 @@ class WebSearchClient:
                                 f"Source {index}:",
                                 f"Title: {item.title or 'N/A'}",
                                 f"URL: {item.url or 'N/A'}",
-                                f"Content: {item.content or 'N/A'}",
+                                f"Content: {self._shorten(item.content)}",
                             ]
                         )
                     )
@@ -178,3 +275,39 @@ class WebSearchClient:
             blocks.append("\n".join(lines))
 
         return "\n\n---\n\n".join(blocks)
+
+    def _shorten(self, value: str | None, limit: int = 500) -> str:
+        if not value:
+            return "N/A"
+
+        value = str(value).strip()
+
+        if len(value) <= limit:
+            return value
+
+        return value[:limit] + "..."
+
+    def _make_cache_key(
+        self,
+        brand_name: str,
+        part_number: str,
+        product_name: str | None = None,
+    ) -> str:
+        return "|".join(
+            [
+                str(brand_name).strip().lower(),
+                str(part_number).strip().upper(),
+                str(product_name or "").strip().lower(),
+            ]
+        )
+
+    def _unique_values(self, values: list[str]) -> list[str]:
+        cleaned = []
+
+        for value in values:
+            item = str(value).strip().upper()
+
+            if item and item not in cleaned:
+                cleaned.append(item)
+
+        return cleaned

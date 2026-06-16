@@ -93,8 +93,8 @@ class MarketPriceLookupOutput(BaseModel):
 
 
 class NewPartBatchLookupOutput(BaseModel):
-    results: list[NewPartLookupOutput]
+    results: list[NewPartLookupOutput] = Field(default_factory=list)
 
 
 class MarketPriceBatchLookupOutput(BaseModel):
-    results: list[MarketPriceLookupOutput]
+    results: list[MarketPriceLookupOutput] = Field(default_factory=list)

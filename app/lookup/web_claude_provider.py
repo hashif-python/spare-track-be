@@ -7,9 +7,7 @@ from app.config import settings
 from app.lookup.base import BaseLookupProvider
 from app.lookup.schemas import (
     MarketPriceBatchLookupOutput,
-    MarketPriceLookupOutput,
     NewPartBatchLookupOutput,
-    NewPartLookupOutput,
 )
 from app.lookup.search import WebSearchClient
 
@@ -24,16 +22,18 @@ class WebClaudeLookupProvider(BaseLookupProvider):
         brand_name: str,
         part_number: str,
     ) -> dict[str, Any]:
+        requested_part_number = str(part_number).strip().upper()
+
         batch_result = self.lookup_new_parts_batch(
             brand_name=brand_name,
-            part_numbers=[part_number],
+            part_numbers=[requested_part_number],
         )
 
         return batch_result.get(
-            part_number.strip().upper(),
+            requested_part_number,
             self._new_part_not_found(
                 brand_name=brand_name,
-                part_number=part_number,
+                part_number=requested_part_number,
                 reason="No result returned from batch lookup",
             ),
         )
@@ -44,20 +44,22 @@ class WebClaudeLookupProvider(BaseLookupProvider):
         part_number: str,
         product_name: str | None = None,
     ) -> dict[str, Any]:
+        requested_part_number = str(part_number).strip().upper()
+
         batch_result = self.lookup_market_prices_batch(
             brand_name=brand_name,
             parts=[
                 {
-                    "part_number": part_number,
+                    "part_number": requested_part_number,
                     "product_name": product_name,
                 }
             ],
         )
 
         return batch_result.get(
-            part_number.strip().upper(),
+            requested_part_number,
             self._price_not_available(
-                part_number=part_number,
+                part_number=requested_part_number,
                 reason="No result returned from batch lookup",
             ),
         )
@@ -99,7 +101,10 @@ class WebClaudeLookupProvider(BaseLookupProvider):
             )
 
             try:
-                structured_llm = self.llm.with_structured_output(NewPartBatchLookupOutput)
+                structured_llm = self.llm.with_structured_output(
+                    NewPartBatchLookupOutput
+                )
+
                 response = structured_llm.invoke(prompt)
 
                 if isinstance(response, NewPartBatchLookupOutput):
@@ -169,7 +174,10 @@ class WebClaudeLookupProvider(BaseLookupProvider):
             )
 
             try:
-                structured_llm = self.llm.with_structured_output(MarketPriceBatchLookupOutput)
+                structured_llm = self.llm.with_structured_output(
+                    MarketPriceBatchLookupOutput
+                )
+
                 response = structured_llm.invoke(prompt)
 
                 if isinstance(response, MarketPriceBatchLookupOutput):
@@ -187,6 +195,7 @@ class WebClaudeLookupProvider(BaseLookupProvider):
             except ValidationError as exc:
                 for item in batch:
                     part_number = item["part_number"]
+
                     final_results[part_number] = self._price_not_available(
                         part_number=part_number,
                         reason=f"Batch validation failed: {str(exc)}",
@@ -195,6 +204,7 @@ class WebClaudeLookupProvider(BaseLookupProvider):
             except Exception as exc:
                 for item in batch:
                     part_number = item["part_number"]
+
                     final_results[part_number] = self._price_not_available(
                         part_number=part_number,
                         reason=f"Claude batch price lookup failed: {str(exc)}",
@@ -221,50 +231,53 @@ class WebClaudeLookupProvider(BaseLookupProvider):
         part_numbers_text = ", ".join(part_numbers)
 
         return f"""
-You are a laptop spare parts research assistant.
+You extract spare part data for all kinds of brands and all kinds of computer-related spare parts.
 
-Goal:
-Find product name, description, and market price for many laptop spare parts in ONE response.
+Brand: {brand_name}
+Requested Part Numbers: {part_numbers_text}
 
-Brand:
-{brand_name}
-
-Part Numbers:
-{part_numbers_text}
-
-Web Search Evidence:
+Evidence:
 {search_context}
 
-Return structured output only.
+Your job:
+For each requested part number, find:
+- product_name
+- description
+- market_price if available
+- currency
+- source_url
+- lookup_status
+- confidence
 
-Required response shape:
+Important rules:
+- We sell all kinds of spare parts, not only laptop parts.
+- Valid parts include laptop, desktop, workstation, server, monitor, printer, and computer hardware spare parts.
+- Valid items include cables, SATA cables, SAS cables, power cables, splitter cables, boards, backplanes, power distribution board cables, adapters, screens, keyboards, hinges, fans, batteries, covers, chargers, ports, brackets, and internal components.
+- Do not reject server, desktop, workstation, cable, or board items.
+- Dell part numbers with leading zero are equivalent to the same number without zero.
+- Examples: M299P = 0M299P, 86TPR = 086TPR, Y100N = 0Y100N.
+- If evidence contains requested part number or equivalent part number, return found.
+- Do not invent data.
+- Use only evidence.
+- Return one result for every requested part number.
+- If price is not available but description is available, still return lookup_status = "found" and market_price = null.
+
+Required JSON structure:
 {{
   "results": [
     {{
-      "part_number": "EXACT_PART_NUMBER",
+      "part_number": "REQUESTED_PART_NUMBER",
       "brand": "{brand_name}",
-      "product_name": "Product name or Not Found",
+      "product_name": "Product Name or Not Found",
       "description": "Short useful description or Not Found",
-      "market_price": 49.99,
+      "market_price": null,
       "currency": "USD",
-      "source_url": "https://source-url.com",
+      "source_url": null,
       "lookup_status": "found",
-      "confidence": 0.85
+      "confidence": 0.8
     }}
   ]
 }}
-
-Rules:
-1. Return one result for every requested part number.
-2. Use only the supplied web evidence.
-3. Do not invent product name, price, URL, or description.
-4. If exact part number is not clearly found, use lookup_status = "not_found".
-5. If not found, product_name = "Not Found" and description = "Not Found".
-6. market_price must be numeric only or null.
-7. source_url must be from the supplied evidence.
-8. confidence must be between 0 and 1.
-9. Use confidence >= 0.8 only when exact brand and exact part number are found.
-10. Use confidence below 0.65 when only similar part numbers are found.
 """
 
     def _build_prices_batch_prompt(
@@ -277,52 +290,46 @@ Rules:
 
         for item in parts:
             part_lines.append(
-                f"- part_number: {item['part_number']}, product_name: {item.get('product_name') or 'Unknown'}"
+                f"{item['part_number']} | {item.get('product_name') or 'Unknown'}"
             )
 
         parts_text = "\n".join(part_lines)
 
         return f"""
-You are a laptop spare parts market price extraction assistant.
+You extract market prices for all kinds of brand spare parts.
 
-Goal:
-Find latest reliable market price for many laptop spare parts in ONE response.
-
-Brand:
-{brand_name}
+Brand: {brand_name}
 
 Parts:
 {parts_text}
 
-Web Search Evidence:
+Evidence:
 {search_context}
 
-Return structured output only.
+Rules:
+- We sell all kinds of spare parts, not only laptop parts.
+- Valid parts include laptop, desktop, workstation, server, monitor, printer, and computer hardware spare parts.
+- Valid items include cables, SATA cables, SAS cables, power cables, splitter cables, boards, backplanes, power distribution board cables, adapters, screens, keyboards, hinges, fans, batteries, covers, chargers, ports, brackets, and internal components.
+- Dell part numbers with leading zero are equivalent to the same number without zero.
+- Examples: M299P = 0M299P, 86TPR = 086TPR, Y100N = 0Y100N.
+- Use only evidence.
+- Do not invent price.
+- If price is not found, return price_not_available.
+- Return one result for every requested part number.
 
-Required response shape:
+Required JSON structure:
 {{
   "results": [
     {{
-      "part_number": "EXACT_PART_NUMBER",
-      "market_price": 49.99,
+      "part_number": "REQUESTED_PART_NUMBER",
+      "market_price": null,
       "currency": "USD",
-      "source_url": "https://source-url.com",
-      "lookup_status": "price_found",
-      "confidence": 0.85
+      "source_url": null,
+      "lookup_status": "price_not_available",
+      "confidence": 0.0
     }}
   ]
 }}
-
-Rules:
-1. Return one result for every requested part number.
-2. Use only supplied web evidence.
-3. Do not invent price.
-4. If no clear price is found, use lookup_status = "price_not_available".
-5. market_price must be numeric only or null.
-6. source_url must be from supplied evidence.
-7. confidence must be between 0 and 1.
-8. Use confidence >= 0.8 only when exact brand and exact part number are found.
-9. Do not use price if result is for a different part number.
 """
 
     def _validate_new_parts_batch_result(
@@ -332,14 +339,25 @@ Rules:
         result: NewPartBatchLookupOutput,
     ) -> dict[str, dict[str, Any]]:
         expected = {part_number.upper() for part_number in expected_part_numbers}
-
         results_by_part: dict[str, dict[str, Any]] = {}
 
         for item in result.results:
-            part_number = item.part_number.strip().upper()
+            returned_part_number = item.part_number.strip().upper()
 
-            if part_number not in expected:
+            matched_expected = None
+
+            for expected_part_number in expected:
+                if self._part_numbers_match(
+                    expected=expected_part_number,
+                    returned=returned_part_number,
+                ):
+                    matched_expected = expected_part_number
+                    break
+
+            if not matched_expected:
                 continue
+
+            part_number = matched_expected
 
             if item.lookup_status != "found":
                 results_by_part[part_number] = self._new_part_not_found(
@@ -393,14 +411,25 @@ Rules:
         result: MarketPriceBatchLookupOutput,
     ) -> dict[str, dict[str, Any]]:
         expected = {item["part_number"].upper() for item in expected_parts}
-
         results_by_part: dict[str, dict[str, Any]] = {}
 
         for item in result.results:
-            part_number = item.part_number.strip().upper()
+            returned_part_number = item.part_number.strip().upper()
 
-            if part_number not in expected:
+            matched_expected = None
+
+            for expected_part_number in expected:
+                if self._part_numbers_match(
+                    expected=expected_part_number,
+                    returned=returned_part_number,
+                ):
+                    matched_expected = expected_part_number
+                    break
+
+            if not matched_expected:
                 continue
+
+            part_number = matched_expected
 
             if item.lookup_status != "price_found":
                 results_by_part[part_number] = self._price_not_available(
@@ -440,6 +469,21 @@ Rules:
                 )
 
         return results_by_part
+
+    def _part_numbers_match(self, expected: str, returned: str) -> bool:
+        expected = str(expected).strip().upper()
+        returned = str(returned).strip().upper()
+
+        if expected == returned:
+            return True
+
+        if expected.startswith("0") and expected[1:] == returned:
+            return True
+
+        if returned.startswith("0") and returned[1:] == expected:
+            return True
+
+        return False
 
     def _new_part_not_found(
         self,
@@ -520,6 +564,6 @@ Rules:
 
     def _chunk_list(self, items: list, size: int) -> list[list]:
         if size <= 0:
-            size = 10
+            size = 3
 
         return [items[index : index + size] for index in range(0, len(items), size)]
