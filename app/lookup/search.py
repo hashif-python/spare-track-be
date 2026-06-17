@@ -14,6 +14,7 @@ class WebSearchClient:
         part_number: str,
         product_name: str | None = None,
     ) -> list[WebSearchResult]:
+        brand_name = str(brand_name).strip()
         part_number = str(part_number).strip().upper()
 
         cache_key = self._make_cache_key(
@@ -119,43 +120,46 @@ class WebSearchClient:
         product_name: str | None = None,
     ) -> list[str]:
         """
-        Keep query generic.
+        Main search format:
 
-        Good:
-        Dell NYR84 description and price
-        Dell 247PN description and price
-        HP L14384-001 description and price
+        Dell KKHCN price
+        HP L14384-001 price
+        Asus 13NB0QJ1AP0101 price
 
-        Avoid forcing product type:
-        laptop, server, PowerEdge, Mini SAS, keyboard, screen, etc.
+        This gives better accuracy because search engine decides the product type.
         """
 
         brand_name = str(brand_name).strip()
         part_number = str(part_number).strip().upper()
 
         alternatives = self._alternate_part_numbers(part_number)
-        alt_text = " OR ".join(alternatives)
 
         queries = []
 
+        # Best query: brand + part number + price
+        queries.append(f"{brand_name} {part_number} price")
+
+        # If product name exists, use it for existing DB items
         if product_name:
-            queries.append(
-                f"{brand_name} {part_number} {product_name} description and price"
-            )
+            queries.append(f"{brand_name} {part_number} {product_name} price")
 
-        queries.append(f"{brand_name} {part_number} description and price")
+        # Dell-style leading zero fallback: M299P / 0M299P
+        for alt_part_number in alternatives:
+            if alt_part_number != part_number:
+                queries.append(f"{brand_name} {alt_part_number} price")
 
-        if len(alternatives) > 1:
-            queries.append(f"{brand_name} ({alt_text}) description and price")
+        # Description fallback
+        queries.append(f"{brand_name} {part_number} description price")
 
-        queries.append(f"{brand_name} {part_number} part number description price")
-        queries.append(f"{brand_name} {part_number} spare part")
+        # Part number fallback
+        queries.append(f"{brand_name} {part_number} part number price")
 
         return list(dict.fromkeys(queries))
 
     def _alternate_part_numbers(self, part_number: str) -> list[str]:
         """
-        Dell often uses both:
+        Supports Dell-style part numbers:
+
         Y100N and 0Y100N
         M299P and 0M299P
         86TPR and 086TPR
@@ -276,7 +280,7 @@ class WebSearchClient:
 
         return "\n\n---\n\n".join(blocks)
 
-    def _shorten(self, value: str | None, limit: int = 500) -> str:
+    def _shorten(self, value: str | None, limit: int = 600) -> str:
         if not value:
             return "N/A"
 
