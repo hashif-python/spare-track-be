@@ -29,6 +29,7 @@ app.add_middleware(
     allow_origins=[
         "https://spare-track-fe.vercel.app",
         "https://spare-track-fe-qgnt.vercel.app",
+        "https://tracker-tool.ghazatech.com",
         "http://localhost:5173",
     ],
     allow_credentials=True,
